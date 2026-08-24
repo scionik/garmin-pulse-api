@@ -1,0 +1,10 @@
+{
+  "bpm": null,
+  "restingHeartRate": null,
+  "min24h": null,
+  "max24h": null,
+  "series24h": [],
+  "lastSyncedAt": null,
+  "fetchedAt": null,
+  "note": "Placeholder. Run setup_garmin_auth.py then fetch_garmin.py to populate this with real data."
+}

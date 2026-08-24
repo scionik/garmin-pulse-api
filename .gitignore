@@ -1,0 +1,6 @@
+.env.local
+.garmin_tokens/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
