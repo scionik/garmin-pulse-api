@@ -2,7 +2,10 @@ name: Fetch Garmin heart rate
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Nominally every 5 min. GitHub delays scheduled runs under load, so the
+    # real cadence lands nearer 15-20 min -- asking for 5 buys headroom, it is
+    # not a promise. Fine either way: the watch is the actual bottleneck.
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:
