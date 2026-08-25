@@ -92,14 +92,47 @@ function clockTime(ts: number): string {
     return `${d.getDate()} ${d.toLocaleString("en", { month: "short" })}, ${hh}:${mm}`
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-    let h = hex.replace("#", "")
-    if (h.length === 3) h = h.split("").map((c) => c + c).join("")
-    const n = parseInt(h, 16)
-    const r = (n >> 16) & 255
-    const g = (n >> 8) & 255
-    const b = n & 255
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+// Framer serialises colour controls differently on canvas vs the published site:
+// on canvas the prop is still the hex default, but published it arrives as
+// "rgb(39, 132, 252)". Naively parsing that as hex yields NaN -> every channel 0
+// -> a black fill that reads as grey. So accept every plausible form.
+let _probeCtx: CanvasRenderingContext2D | null = null
+
+function parseRgb(s: string): [number, number, number] | null {
+    const v = s.trim()
+    if (v.charAt(0) === "#") {
+        let h = v.slice(1)
+        if (h.length === 3) h = h.split("").map((c) => c + c).join("")
+        if (h.length === 8) h = h.slice(0, 6) // #rrggbbaa -> drop alpha
+        if (h.length !== 6) return null
+        const n = parseInt(h, 16)
+        if (isNaN(n)) return null
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    }
+    // rgb()/rgba(), comma- or space-separated
+    const m = v.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i)
+    if (m) return [Math.round(+m[1]), Math.round(+m[2]), Math.round(+m[3])]
+    return null
+}
+
+function toRgba(color: string, alpha: number): string {
+    const fallback = `rgba(39, 132, 252, ${alpha})`
+    if (typeof color !== "string" || !color) return fallback
+
+    let rgb = parseRgb(color)
+
+    // Anything else (named colours, hsl, oklch): let canvas normalise it.
+    if (!rgb && typeof document !== "undefined") {
+        if (!_probeCtx) _probeCtx = document.createElement("canvas").getContext("2d")
+        if (_probeCtx) {
+            _probeCtx.fillStyle = "#2784fc"
+            _probeCtx.fillStyle = color
+            rgb = parseRgb(String(_probeCtx.fillStyle))
+        }
+    }
+
+    if (!rgb) return fallback
+    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`
 }
 
 /**
@@ -285,8 +318,8 @@ export default function GarminPulse(props: any) {
             ctx.lineTo(X(visible[visible.length - 1].t), h)
             ctx.closePath()
             const grad = ctx.createLinearGradient(0, padTop, 0, h)
-            grad.addColorStop(0, hexToRgba(accent, 0.14))
-            grad.addColorStop(1, hexToRgba(accent, 0))
+            grad.addColorStop(0, toRgba(accent, 0.14))
+            grad.addColorStop(1, toRgba(accent, 0))
             ctx.fillStyle = grad
             ctx.fill()
 
@@ -315,7 +348,7 @@ export default function GarminPulse(props: any) {
             if (nowX - ex > 2) {
                 ctx.save()
                 ctx.setLineDash([2, 4])
-                ctx.strokeStyle = hexToRgba(accent, 0.3)
+                ctx.strokeStyle = toRgba(accent, 0.3)
                 ctx.lineWidth = 1.4
                 ctx.beginPath()
                 ctx.moveTo(ex, ey)
@@ -337,7 +370,7 @@ export default function GarminPulse(props: any) {
                 const ring = phase / 0.55
                 ctx.beginPath()
                 ctx.arc(ex, ey, 3 + ring * 13, 0, Math.PI * 2)
-                ctx.strokeStyle = hexToRgba(accent, 0.4 * (1 - ring))
+                ctx.strokeStyle = toRgba(accent, 0.4 * (1 - ring))
                 ctx.lineWidth = 1.5
                 ctx.stroke()
             }
