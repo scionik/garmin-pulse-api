@@ -209,10 +209,12 @@ export default function GarminPulse(props: any) {
 
     // ---- drawing ----
     useEffect(() => {
-        // Bound to a non-null local so the nested draw() keeps the narrowed type.
-        const cv = canvasRef.current
-        if (!cv) return
+        // Re-bound through an explicitly non-nullable const: TypeScript won't carry
+        // a narrowed type into the nested draw() closure, but a declared type holds.
+        const cvMaybe = canvasRef.current
+        if (!cvMaybe) return
         if (typeof window === "undefined") return
+        const cv: HTMLCanvasElement = cvMaybe
 
         const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches
         let raf = 0
