@@ -86,6 +86,10 @@ def merge_heart_rate_series(days_data: list[dict]) -> list[list]:
     return samples
 
 
+def _readings_only(d: dict) -> dict:
+    """Everything except fetchedAt, which changes on every run by definition."""
+    return {k: v for k, v in d.items() if k != "fetchedAt"}
+
 def main():
     garmin = get_client()
 
@@ -126,6 +130,22 @@ def main():
     }
 
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
+
+    # The watch only reaches Garmin every few hours, so most runs find nothing new.
+    # Rewriting the file anyway would change fetchedAt, which makes git see a diff
+    # and triggers a pointless commit + Vercel redeploy on every single run.
+    if OUTPUT_PATH.exists():
+        try:
+            existing = json.loads(OUTPUT_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = None
+        if existing and _readings_only(existing) == _readings_only(output):
+            print(
+                f"No new readings since {output['lastSyncedAt']} -- "
+                f"leaving {OUTPUT_PATH.name} untouched."
+            )
+            return
+
     OUTPUT_PATH.write_text(json.dumps(output, indent=2))
     print(f"Wrote {OUTPUT_PATH} -- bpm={last_bpm}, resting={output['restingHeartRate']}")
 

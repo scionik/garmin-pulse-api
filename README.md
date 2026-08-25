@@ -16,8 +16,14 @@ rate, honestly labeled with how long ago it synced."
 Every 15 minutes, a free GitHub Action:
 1. Logs in to Garmin using a saved session (not your password — see below)
 2. Fetches your current heart rate, resting heart rate, and last 24h of readings
-3. Writes the result to `public/pulse.json`
+3. Writes the result to `public/pulse.json` — **only if the readings actually
+   changed**. Your watch reaches Garmin every few hours, so most runs find
+   nothing new and deliberately leave the file alone; otherwise the `fetchedAt`
+   timestamp alone would produce a commit and a redeploy on every single run.
 4. Commits it, which Vercel picks up and redeploys automatically
+
+So a commit in this repo means new heart-rate data, not just "the job ran".
+To check the job is alive, look at the Actions tab, not the commit history.
 
 The widget just does a plain `fetch()` of that JSON file.
 
