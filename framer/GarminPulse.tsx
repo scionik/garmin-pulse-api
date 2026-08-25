@@ -286,6 +286,9 @@ export default function GarminPulse(props: any) {
         scrimWidth = 0,
         fillFadeTo = 25,
 
+        revealMs = 1200,
+        revealOnce = true,
+
         beatIntensity = 20,
         beatDecay = 9,
         beatSurge = true,
@@ -315,6 +318,8 @@ export default function GarminPulse(props: any) {
     const mapRef = useRef<Mapping | null>(null)
     const seriesRef = useRef<Point[]>([])
     const drawRef = useRef<((now: number) => void) | null>(null)
+    // null = hasn't entered the viewport yet, so nothing is drawn.
+    const revealStartRef = useRef<number | null>(null)
 
     // ---- tooltip ----
     const tipRef = useRef<HTMLDivElement>(null)
@@ -374,6 +379,33 @@ export default function GarminPulse(props: any) {
         return () => clearInterval(id)
     }, [])
 
+    // ---- reveal on scroll into view ----
+    useEffect(() => {
+        const el = widgetRef.current
+        if (!el || typeof window === "undefined") return
+        if (typeof IntersectionObserver === "undefined") {
+            revealStartRef.current = 0 // no observer: just show it
+            return
+        }
+        const io = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        if (revealStartRef.current == null) {
+                            revealStartRef.current = performance.now()
+                        }
+                        if (revealOnce) io.disconnect()
+                    } else if (!revealOnce) {
+                        revealStartRef.current = null // rewind so it replays
+                    }
+                })
+            },
+            { threshold: 0.25 }
+        )
+        io.observe(el)
+        return () => io.disconnect()
+    }, [revealOnce])
+
     // ---- drawing ----
     useEffect(() => {
         const cvMaybe = canvasRef.current
@@ -428,8 +460,21 @@ export default function GarminPulse(props: any) {
             const t1 = S[S.length - 1].t
             const span = Math.max(1, t1 - t0)
 
+            // Wipe in left to right once the widget scrolls into view. Eased out so
+            // it decelerates into place rather than stopping dead.
+            let reveal = 1
+            if (revealMs > 0 && !reduce) {
+                const started = revealStartRef.current
+                if (started == null) reveal = 0
+                else {
+                    const linear = Math.min(1, Math.max(0, (now - started) / revealMs))
+                    reveal = 1 - Math.pow(1 - linear, 3)
+                }
+            }
+
+            // The beat waits for the entrance to finish, so the two don't compete.
             const beatMs = 60000 / Math.max(30, p.bpm || 60)
-            const E = envelope((now % beatMs) / beatMs)
+            const E = reveal < 1 ? 0 : envelope((now % beatMs) / beatMs)
 
             const X = (t: number) => left + ((t - t0) / span) * (right - left)
             const Y0 = (v: number) =>
@@ -442,6 +487,14 @@ export default function GarminPulse(props: any) {
             const Y = (v: number) => yRest + (Y0(v) - yRest) * flexK
 
             mapRef.current = { t0, span, lo, hi, w, h, padTop, padBottom, left, right }
+
+            const revealX = left + (right - left) * reveal
+            if (reveal <= 0) return
+
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(0, 0, Math.max(0, revealX + 1), h)
+            ctx.clip()
 
             // resting reference
             if (showResting && p.restingHeartRate) {
@@ -511,6 +564,8 @@ export default function GarminPulse(props: any) {
             ctx.lineCap = "round"
             ctx.stroke()
 
+            ctx.restore() // end reveal clip — scrim and marker are drawn unclipped
+
             // scrim keeps the overlaid text legible over the trace
             if (showScrim && scrimWidth > 0) {
                 const sw = Math.min(w, scrimWidth)
@@ -522,20 +577,33 @@ export default function GarminPulse(props: any) {
                 ctx.fillRect(0, 0, sw, h)
             }
 
-            // last real reading
-            const last = pts[pts.length - 1]
+            // Marker: rides the leading edge while the line draws itself, then
+            // settles on the last real reading.
+            let mx2 = pts[pts.length - 1].x
+            let my2 = pts[pts.length - 1].y
+            if (reveal < 1) {
+                for (let i = 0; i < pts.length - 1; i++) {
+                    if (pts[i + 1].x >= revealX) {
+                        const seg = pts[i + 1].x - pts[i].x
+                        const f = seg === 0 ? 0 : (revealX - pts[i].x) / seg
+                        mx2 = revealX
+                        my2 = pts[i].y + (pts[i + 1].y - pts[i].y) * f
+                        break
+                    }
+                }
+            }
             ctx.beginPath()
-            ctx.arc(last.x, last.y, 4 + E * 6, 0, Math.PI * 2)
+            ctx.arc(mx2, my2, 4 + E * 6, 0, Math.PI * 2)
             ctx.fillStyle = toRgba(accent, 0.1 + E * 0.18)
             ctx.fill()
             ctx.beginPath()
-            ctx.arc(last.x, last.y, 3.4 + E * 0.8, 0, Math.PI * 2)
+            ctx.arc(mx2, my2, 3.4 + E * 0.8, 0, Math.PI * 2)
             ctx.fillStyle = accent
             ctx.fill()
 
             // hover crosshair
             const hv = hoverRef.current
-            if (hv != null && S[hv]) {
+            if (reveal >= 1 && hv != null && S[hv]) {
                 const hx = X(S[hv].t)
                 const hy = Y(S[hv].v)
                 ctx.save()
@@ -577,7 +645,7 @@ export default function GarminPulse(props: any) {
     }, [
         accent, surface, hairlineColor, showResting, showEnvelope, showScrim, scrimWidth,
         bucketMinutes, lineWeight, restingOpacity, traceTopPct, traceBottomPct, fillFadeTo,
-        beatIntensity, beatDecay, beatSurge, beatFlex, beatBloom, lubDub,
+        beatIntensity, beatDecay, beatSurge, beatFlex, beatBloom, lubDub, revealMs,
         width, height,
     ])
 
@@ -921,6 +989,16 @@ addPropertyControls(GarminPulse, {
         defaultValue: 0, min: 0, max: 800, step: 10,
         description: "How far the white fade reaches from the left edge. 0 turns it off and lets the line run behind the text.",
         hidden: (p: any) => !p.showScrim,
+    },
+
+    revealMs: {
+        type: ControlType.Number, title: "Reveal",
+        defaultValue: 1200, min: 0, max: 4000, step: 100,
+        description: "How long the line takes to draw itself in, left to right, once the widget scrolls into view. 0 skips the entrance and shows it immediately. Respects reduced-motion settings.",
+    },
+    revealOnce: {
+        type: ControlType.Boolean, title: "Reveal once", defaultValue: true,
+        description: "On: plays the first time the widget is seen and never again. Off: replays every time it scrolls back into view.",
     },
 
     beatSurge: {
