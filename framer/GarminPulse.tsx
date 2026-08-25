@@ -3,18 +3,25 @@ import ReactDOM from "react-dom"
 import { addPropertyControls, ControlType } from "framer"
 
 /**
- * Garmin Pulse — XL widget (1200 × 288)
+ * My Heart Rate — XL widget (1200 × 160 by default)
  *
- * Draws the real 24h heart-rate series from garmin-pulse-api. Every point on the
- * line is a reading the watch actually took; the only animated element is the
- * marker at the live end, which beats at the real current BPM.
+ * Full-bleed chart: the widget carries no padding, the canvas fills it edge to
+ * edge and the text is overlaid with a 20px inset. The area fill always closes
+ * at the widget's bottom edge.
  *
- * Hovering the trace snaps a crosshair to the nearest real reading and shows its
- * time and value. The tooltip is portalled to document.body because the widget
- * clips its own overflow.
+ * Every plotted point comes from garmin-pulse-api. Optional bucketing averages
+ * readings over N minutes (the faint band behind shows the real spread inside
+ * each bucket, so smoothing never hides variance), and the curve is monotone
+ * cubic so it has no corners and never overshoots into values that never
+ * happened.
  *
- * NOTE: Framer's canvas blocks external fetch, so on canvas this falls back to a
- * baked-in sample and says so. Real data only appears on the published site.
+ * The beat is one sudden event per real heartbeat — instant attack, exponential
+ * decay, optional lub-dub second spike — expressed as Surge (stroke weight and
+ * alpha), Flex (vertical expansion; the only style that distorts values) and
+ * Bloom (fill opacity). Nothing is interpolated or predicted.
+ *
+ * NOTE: Framer's canvas blocks external fetch, so on canvas this falls back to
+ * a baked-in sample. Real data only appears on the published site.
  */
 
 const WIDGET_SHADOW =
@@ -28,19 +35,28 @@ const TIP_GAP = 4
 const SAMPLE_RAW =
     "0,83;26,80;42,65;58,64;74,61;90,61;106,62;122,78;138,60;154,63;170,54;186,52;202,52;218,53;234,57;250,54;266,55;282,58;298,56;314,52;330,51;346,50;362,51;378,54;394,52;410,53;426,50;442,54;458,51;474,57;490,59;506,49;522,51;538,59"
 
-type Point = { t: number; v: number }
+// Built at runtime so the colour stays a Framer control. Framer breaks inline
+// SVG in JSX, so it has to arrive as an <img> data URI.
+function heartIcon(color: string): string {
+    const svg =
+        '<svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M12 21.593c-5.63-5.539-11-10.297-11-14.402 0-3.791 3.068-5.191 5.281-5.191 1.312 0 4.151.501 5.719 4.457 1.59-3.968 4.464-4.447 5.726-4.447 2.54 0 5.274 1.621 5.274 5.181 0 4.069-5.136 8.625-11 14.402z" fill="' +
+        color +
+        '"/></svg>'
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg)
+}
+
+type Point = { t: number; v: number; lo: number; hi: number; n: number; t0?: number; t1?: number }
 type PulseData = {
     bpm: number
     restingHeartRate: number | null
     min24h: number
     max24h: number
-    series: Point[]
+    series: { t: number; v: number }[]
     lastSyncedAt: string | null
     isSample: boolean
 }
 
-// Geometry shared between the renderer and the hover hit-test, so the crosshair
-// lands exactly on the drawn line rather than on a re-derived approximation.
 type Mapping = {
     t0: number
     span: number
@@ -50,6 +66,8 @@ type Mapping = {
     h: number
     padTop: number
     padBottom: number
+    left: number
+    right: number
 }
 
 function buildSample(): PulseData {
@@ -86,16 +104,16 @@ function clockTime(ts: number): string {
     const mm = String(d.getMinutes()).padStart(2, "0")
     const startOfToday = new Date()
     startOfToday.setHours(0, 0, 0, 0)
-    const dayDelta = Math.round((startOfToday.getTime() - new Date(d).setHours(0, 0, 0, 0)) / 86400000)
+    const dayDelta = Math.round(
+        (startOfToday.getTime() - new Date(d).setHours(0, 0, 0, 0)) / 86400000
+    )
     if (dayDelta === 0) return `${hh}:${mm}`
     if (dayDelta === 1) return `Yesterday ${hh}:${mm}`
     return `${d.getDate()} ${d.toLocaleString("en", { month: "short" })}, ${hh}:${mm}`
 }
 
-// Framer serialises colour controls differently on canvas vs the published site:
-// on canvas the prop is still the hex default, but published it arrives as
-// "rgb(39, 132, 252)". Naively parsing that as hex yields NaN -> every channel 0
-// -> a black fill that reads as grey. So accept every plausible form.
+// Framer serialises colour controls as hex on canvas but "rgb(39, 132, 252)"
+// when published. Parsing that as hex gives NaN -> a black fill reading as grey.
 let _probeCtx: CanvasRenderingContext2D | null = null
 
 function parseRgb(s: string): [number, number, number] | null {
@@ -103,13 +121,12 @@ function parseRgb(s: string): [number, number, number] | null {
     if (v.charAt(0) === "#") {
         let h = v.slice(1)
         if (h.length === 3) h = h.split("").map((c) => c + c).join("")
-        if (h.length === 8) h = h.slice(0, 6) // #rrggbbaa -> drop alpha
+        if (h.length === 8) h = h.slice(0, 6)
         if (h.length !== 6) return null
         const n = parseInt(h, 16)
         if (isNaN(n)) return null
         return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
     }
-    // rgb()/rgba(), comma- or space-separated
     const m = v.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i)
     if (m) return [Math.round(+m[1]), Math.round(+m[2]), Math.round(+m[3])]
     return null
@@ -118,10 +135,7 @@ function parseRgb(s: string): [number, number, number] | null {
 function toRgba(color: string, alpha: number): string {
     const fallback = `rgba(39, 132, 252, ${alpha})`
     if (typeof color !== "string" || !color) return fallback
-
     let rgb = parseRgb(color)
-
-    // Anything else (named colours, hsl, oklch): let canvas normalise it.
     if (!rgb && typeof document !== "undefined") {
         if (!_probeCtx) _probeCtx = document.createElement("canvas").getContext("2d")
         if (_probeCtx) {
@@ -130,30 +144,148 @@ function toRgba(color: string, alpha: number): string {
             rgb = parseRgb(String(_probeCtx.fillStyle))
         }
     }
-
     if (!rgb) return fallback
     return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`
+}
+
+// Average into fixed time buckets, keeping min/max so the spread can be drawn.
+function bucket(raw: { t: number; v: number }[], minutes: number): Point[] {
+    if (!minutes) {
+        return raw.map((p) => ({ t: p.t, v: p.v, lo: p.v, hi: p.v, n: 1 }))
+    }
+    const size = minutes * 60000
+    const out: any[] = []
+    let cur: any = null
+    raw.forEach((p) => {
+        const k = Math.floor(p.t / size)
+        if (!cur || cur.k !== k) {
+            if (cur) out.push(cur)
+            cur = { k, sum: 0, n: 0, lo: Infinity, hi: -Infinity, t0: p.t, t1: p.t }
+        }
+        cur.sum += p.v
+        cur.n++
+        cur.lo = Math.min(cur.lo, p.v)
+        cur.hi = Math.max(cur.hi, p.v)
+        cur.t1 = p.t
+    })
+    if (cur) out.push(cur)
+    return out.map((b) => ({
+        t: (b.t0 + b.t1) / 2,
+        v: b.sum / b.n,
+        lo: b.lo,
+        hi: b.hi,
+        n: b.n,
+        t0: b.t0,
+        t1: b.t1,
+    }))
+}
+
+// Fritsch–Carlson monotone tangents: smooth, but never overshoots the data.
+function tangents(pts: { x: number; y: number }[]): number[] {
+    const n = pts.length
+    const d: number[] = []
+    const m: number[] = new Array(n).fill(0)
+    for (let i = 0; i < n - 1; i++) {
+        const dx = pts[i + 1].x - pts[i].x
+        d[i] = dx === 0 ? 0 : (pts[i + 1].y - pts[i].y) / dx
+    }
+    m[0] = d[0] || 0
+    m[n - 1] = d[n - 2] || 0
+    for (let j = 1; j < n - 1; j++) {
+        m[j] = !d[j - 1] || !d[j] || d[j - 1] * d[j] <= 0 ? 0 : (d[j - 1] + d[j]) / 2
+    }
+    for (let k = 0; k < n - 1; k++) {
+        if (d[k] === 0) {
+            m[k] = 0
+            m[k + 1] = 0
+            continue
+        }
+        const a = m[k] / d[k]
+        const b = m[k + 1] / d[k]
+        const s = a * a + b * b
+        if (s > 9) {
+            const tau = 3 / Math.sqrt(s)
+            m[k] = tau * a * d[k]
+            m[k + 1] = tau * b * d[k]
+        }
+    }
+    return m
+}
+
+function curve(
+    ctx: CanvasRenderingContext2D,
+    pts: { x: number; y: number }[],
+    closeAt: number | null
+) {
+    if (pts.length < 2) return
+    const m = tangents(pts)
+    ctx.beginPath()
+    if (closeAt != null) {
+        ctx.moveTo(pts[0].x, closeAt)
+        ctx.lineTo(pts[0].x, pts[0].y)
+    } else {
+        ctx.moveTo(pts[0].x, pts[0].y)
+    }
+    for (let i = 0; i < pts.length - 1; i++) {
+        const dx = (pts[i + 1].x - pts[i].x) / 3
+        ctx.bezierCurveTo(
+            pts[i].x + dx,
+            pts[i].y + m[i] * dx,
+            pts[i + 1].x - dx,
+            pts[i + 1].y - m[i + 1] * dx,
+            pts[i + 1].x,
+            pts[i + 1].y
+        )
+    }
+    if (closeAt != null) {
+        ctx.lineTo(pts[pts.length - 1].x, closeAt)
+        ctx.closePath()
+    }
 }
 
 /**
  * @framerSupportedLayoutWidth fixed
  * @framerSupportedLayoutHeight fixed
  * @framerIntrinsicWidth 1200
- * @framerIntrinsicHeight 288
+ * @framerIntrinsicHeight 160
  */
 export default function GarminPulse(props: any) {
     const {
         width = 1200,
-        height = 288,
+        height = 160,
         endpoint = "https://garmin-pulse-api-seven.vercel.app/pulse.json",
+        title = "My heart rate",
+
         accent = "#2784FC",
         surface = "#FFFFFF",
         inkColor = "#2B2B2B",
-        mutedColor = "#7A7A7A",
+        titleColor = "#7A7A7A",
+        unitColor = "#B8B8B8",
+        metaColor = "#B8B8B8",
         hairlineColor = "#EBEBEB",
+        heartColor = "#BC0025",
+
+        numeralSize = 32,
+        unitSize = 10,
+
+        traceTopPct = 26,
+        traceBottomPct = 12,
+        bucketMinutes = 6,
+        lineWeight = 2,
+        restingOpacity = 35,
         showResting = true,
-        windowHours = 12,
-        numeralSize = 84,
+        showEnvelope = true,
+        showScrim = true,
+        scrimWidth = 420,
+        fillFadeTo = 25,
+
+        beatIntensity = 100,
+        beatDecay = 9,
+        beatSurge = true,
+        beatFlex = false,
+        beatBloom = false,
+        lubDub = true,
+
         refreshSeconds = 300,
         showTooltip = true,
         tooltipBg = "#2B2B2B",
@@ -169,15 +301,13 @@ export default function GarminPulse(props: any) {
 
     const widgetRef = useRef<HTMLDivElement>(null)
     const canvasRef = useRef<HTMLCanvasElement>(null)
-    const numeralRef = useRef<HTMLDivElement>(null)
     const pulseRef = useRef<PulseData>(pulse)
     pulseRef.current = pulse
 
-    // Hover index lives in a ref so the animation loop can read it without the
-    // effect re-running (and restarting the rAF) on every mouse move.
     const hoverRef = useRef<number | null>(null)
     const mapRef = useRef<Mapping | null>(null)
-    const drawRef = useRef<((phase: number) => void) | null>(null)
+    const seriesRef = useRef<Point[]>([])
+    const drawRef = useRef<((now: number) => void) | null>(null)
 
     // ---- tooltip ----
     const tipRef = useRef<HTMLDivElement>(null)
@@ -196,7 +326,6 @@ export default function GarminPulse(props: any) {
         let l = anchor.centerX - w / 2
         l = maxLeft >= minLeft ? Math.max(minLeft, Math.min(l, maxLeft)) : minLeft
         setTipLeft(l)
-
         const lineHeight = tooltipFontSize * 1.4
         setTipRadius(tipRef.current.offsetHeight > lineHeight * 1.5 ? 10 : 8)
     }, [anchor, tip, tooltipFontSize, tooltipFontWeight, tooltipPaddingX, tooltipPaddingY])
@@ -204,7 +333,6 @@ export default function GarminPulse(props: any) {
     // ---- data ----
     useEffect(() => {
         let cancelled = false
-
         async function load() {
             try {
                 const res = await fetch(endpoint, { cache: "no-store" })
@@ -222,10 +350,9 @@ export default function GarminPulse(props: any) {
                     isSample: false,
                 })
             } catch (e) {
-                // Framer canvas blocks fetch — keep the sample rather than showing an error.
+                // Framer canvas blocks fetch — keep the sample rather than erroring.
             }
         }
-
         load()
         const id = setInterval(load, Math.max(30, refreshSeconds) * 1000)
         return () => {
@@ -234,7 +361,6 @@ export default function GarminPulse(props: any) {
         }
     }, [endpoint, refreshSeconds])
 
-    // ---- "synced X ago" ticks without refetching ----
     const [, forceTick] = useState(0)
     useEffect(() => {
         const id = setInterval(() => forceTick((n) => n + 1), 30000)
@@ -243,8 +369,6 @@ export default function GarminPulse(props: any) {
 
     // ---- drawing ----
     useEffect(() => {
-        // Re-bound through an explicitly non-nullable const: TypeScript won't carry
-        // a narrowed type into the nested draw() closure, but a declared type holds.
         const cvMaybe = canvasRef.current
         if (!cvMaybe) return
         if (typeof window === "undefined") return
@@ -253,7 +377,22 @@ export default function GarminPulse(props: any) {
         const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches
         let raf = 0
 
-        function draw(phase: number) {
+        // One heartbeat: instantaneous attack, exponential decay. The optional
+        // second spike ~30% later is what makes it read as lub-dub.
+        function spike(p: number, at: number, amp: number, tau: number) {
+            let d = p - at
+            if (d < 0) d += 1
+            if (d > 0.6) return 0
+            return amp * Math.exp(-d / tau)
+        }
+        function envelope(p: number) {
+            const tau = Math.max(0.01, beatDecay / 100)
+            let e = spike(p, 0, 1, tau)
+            if (lubDub) e = Math.max(e, spike(p, 0.3, 0.45, tau * 0.8))
+            return Math.min(1.6, e * (beatIntensity / 100))
+        }
+
+        function draw(now: number) {
             const p = pulseRef.current
             const dpr = window.devicePixelRatio || 1
             const w = cv.clientWidth
@@ -268,134 +407,139 @@ export default function GarminPulse(props: any) {
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
             ctx.clearRect(0, 0, w, h)
 
-            const padTop = 26
-            const padBottom = 26
+            const S = bucket(p.series, Math.max(0, Math.round(bucketMinutes)))
+            seriesRef.current = S
+            if (S.length < 2) return
+
+            const left = 0
+            const right = w - 5
+            const padTop = (h * traceTopPct) / 100
+            const padBottom = (h * traceBottomPct) / 100
             const lo = p.min24h - 3
             const hi = p.max24h + 3
+            const t0 = S[0].t
+            const t1 = S[S.length - 1].t
+            const span = Math.max(1, t1 - t0)
 
-            // The x-axis is a window ending at *now*, not at the last reading. That
-            // makes the whole trace drift left as real time passes -- genuinely live
-            // motion, with every point still at its own true timestamp. Nothing here
-            // is interpolated or predicted.
-            const span = Math.max(1, windowHours) * 3600000
-            const tEnd = Date.now()
-            const t0 = tEnd - span
+            const beatMs = 60000 / Math.max(30, p.bpm || 60)
+            const E = envelope((now % beatMs) / beatMs)
 
-            mapRef.current = { t0, span, lo, hi, w, h, padTop, padBottom }
-
-            const X = (t: number) => ((t - t0) / span) * (w - 10)
-            const Y = (v: number) =>
+            const X = (t: number) => left + ((t - t0) / span) * (right - left)
+            const Y0 = (v: number) =>
                 padTop + (1 - (v - lo) / (hi - lo)) * (h - padTop - padBottom)
 
-            // Include one sample before the window so the line enters from off-canvas
-            // instead of popping in at the left edge.
-            let firstIdx = p.series.findIndex((pt) => pt.t >= t0)
-            if (firstIdx === -1) firstIdx = p.series.length - 1
-            const visible = p.series.slice(Math.max(0, firstIdx - 1))
-            if (!visible.length) return
+            // Flex expands the trace about the resting line for an instant. It is
+            // the only style that moves geometry, so it briefly overstates values.
+            const yRest = Y0(p.restingHeartRate || lo)
+            const flexK = beatFlex ? 1 + 0.07 * E : 1
+            const Y = (v: number) => yRest + (Y0(v) - yRest) * flexK
+
+            mapRef.current = { t0, span, lo, hi, w, h, padTop, padBottom, left, right }
 
             // resting reference
             if (showResting && p.restingHeartRate) {
-                const yRest = Y(p.restingHeartRate)
                 ctx.save()
                 ctx.setLineDash([2, 4])
                 ctx.strokeStyle = hairlineColor
                 ctx.lineWidth = 1
                 ctx.beginPath()
-                ctx.moveTo(0, yRest)
-                ctx.lineTo(w, yRest)
+                ctx.moveTo(left, Y(p.restingHeartRate))
+                ctx.lineTo(w, Y(p.restingHeartRate))
                 ctx.stroke()
                 ctx.restore()
-                ctx.fillStyle = mutedColor
-                ctx.font = '500 10px "Geist", sans-serif'
-                ctx.fillText(`resting ${p.restingHeartRate}`, 2, yRest - 6)
             }
 
-            // area under the line
-            ctx.beginPath()
-            ctx.moveTo(X(visible[0].t), h)
-            visible.forEach((pt) => ctx.lineTo(X(pt.t), Y(pt.v)))
-            ctx.lineTo(X(visible[visible.length - 1].t), h)
-            ctx.closePath()
-            const grad = ctx.createLinearGradient(0, padTop, 0, h)
-            grad.addColorStop(0, toRgba(accent, 0.14))
-            grad.addColorStop(1, toRgba(accent, 0))
-            ctx.fillStyle = grad
+            // min–max spread, so bucketing never hides real variance
+            if (showEnvelope && bucketMinutes > 0) {
+                const up = S.map((q) => ({ x: X(q.t), y: Y(q.hi) }))
+                const dn = S.map((q) => ({ x: X(q.t), y: Y(q.lo) })).reverse()
+                const mu = tangents(up)
+                const md = tangents(dn)
+                ctx.beginPath()
+                ctx.moveTo(up[0].x, up[0].y)
+                for (let i = 0; i < up.length - 1; i++) {
+                    const dx = (up[i + 1].x - up[i].x) / 3
+                    ctx.bezierCurveTo(
+                        up[i].x + dx, up[i].y + mu[i] * dx,
+                        up[i + 1].x - dx, up[i + 1].y - mu[i + 1] * dx,
+                        up[i + 1].x, up[i + 1].y
+                    )
+                }
+                ctx.lineTo(dn[0].x, dn[0].y)
+                for (let j = 0; j < dn.length - 1; j++) {
+                    const dx = (dn[j + 1].x - dn[j].x) / 3
+                    ctx.bezierCurveTo(
+                        dn[j].x + dx, dn[j].y + md[j] * dx,
+                        dn[j + 1].x - dx, dn[j + 1].y - md[j + 1] * dx,
+                        dn[j + 1].x, dn[j + 1].y
+                    )
+                }
+                ctx.closePath()
+                ctx.fillStyle = toRgba(accent, 0.09)
+                ctx.fill()
+            }
+
+            const pts = S.map((q) => ({ x: X(q.t), y: Y(q.v) }))
+
+            // area fill — always closes at the widget's bottom edge
+            curve(ctx, pts, h)
+            const fillTop = Math.min(0.5, 0.13 * (beatBloom ? 1 + 1.6 * E : 1))
+            const fadeTo = Math.max(0, Math.min(1, fillFadeTo / 100))
+            // The bottom stop is deliberately NOT zero: fading to fully transparent
+            // makes the tint die out ~2/3 down, so the fill looks like it stops short
+            // of the widget. A small residual alpha carries it to the bottom edge.
+            const g = ctx.createLinearGradient(0, padTop, 0, h)
+            g.addColorStop(0, toRgba(accent, fillTop))
+            g.addColorStop(1, toRgba(accent, fillTop * fadeTo))
+            ctx.fillStyle = g
             ctx.fill()
 
-            // the line
-            ctx.beginPath()
-            visible.forEach((pt, i) => {
-                const x = X(pt.t)
-                const y = Y(pt.v)
-                if (i === 0) ctx.moveTo(x, y)
-                else ctx.lineTo(x, y)
-            })
-            ctx.strokeStyle = accent
-            ctx.lineWidth = 1.6
+            // the line — Surge thickens and brightens it everywhere at once
+            const dimA = restingOpacity / 100
+            const alpha = beatSurge ? Math.min(1, dimA + (1 - dimA) * E) : 1
+            curve(ctx, pts, null)
+            ctx.strokeStyle = toRgba(accent, alpha)
+            ctx.lineWidth = lineWeight * (beatSurge ? 1 + 0.8 * E : 1)
             ctx.lineJoin = "round"
             ctx.lineCap = "round"
             ctx.stroke()
 
-            // Everything from the last real reading to now is unmeasured, so it is
-            // drawn as a faint dotted carry-forward rather than as solid line. The
-            // gap grows visibly while the watch hasn't synced.
-            const last = visible[visible.length - 1]
-            const ex = X(last.t)
-            const ey = Y(last.v)
-            const nowX = X(tEnd)
-
-            if (nowX - ex > 2) {
-                ctx.save()
-                ctx.setLineDash([2, 4])
-                ctx.strokeStyle = toRgba(accent, 0.3)
-                ctx.lineWidth = 1.4
-                ctx.beginPath()
-                ctx.moveTo(ex, ey)
-                ctx.lineTo(nowX, ey)
-                ctx.stroke()
-                ctx.restore()
+            // scrim keeps the overlaid text legible over the trace
+            if (showScrim && scrimWidth > 0) {
+                const sw = Math.min(w, scrimWidth)
+                const sc = ctx.createLinearGradient(0, 0, sw, 0)
+                sc.addColorStop(0, toRgba(surface, 0.92))
+                sc.addColorStop(0.6, toRgba(surface, 0.6))
+                sc.addColorStop(1, toRgba(surface, 0))
+                ctx.fillStyle = sc
+                ctx.fillRect(0, 0, sw, h)
             }
 
-            // the live edge itself
-            ctx.save()
-            ctx.strokeStyle = hairlineColor
-            ctx.lineWidth = 1
+            // last real reading
+            const last = pts[pts.length - 1]
             ctx.beginPath()
-            ctx.moveTo(nowX, padTop - 10)
-            ctx.lineTo(nowX, h - padBottom + 10)
-            ctx.stroke()
-            ctx.restore()
-            if (phase < 0.55) {
-                const ring = phase / 0.55
-                ctx.beginPath()
-                ctx.arc(ex, ey, 3 + ring * 13, 0, Math.PI * 2)
-                ctx.strokeStyle = toRgba(accent, 0.4 * (1 - ring))
-                ctx.lineWidth = 1.5
-                ctx.stroke()
-            }
-            const pop = phase < 0.16 ? 1 + (1 - phase / 0.16) * 0.45 : 1
+            ctx.arc(last.x, last.y, 4 + E * 6, 0, Math.PI * 2)
+            ctx.fillStyle = toRgba(accent, 0.1 + E * 0.18)
+            ctx.fill()
             ctx.beginPath()
-            ctx.arc(ex, ey, 3.2 * pop, 0, Math.PI * 2)
+            ctx.arc(last.x, last.y, 3.4 + E * 0.8, 0, Math.PI * 2)
             ctx.fillStyle = accent
             ctx.fill()
 
-            // hover crosshair, snapped to the nearest real reading
-            const hi_ = hoverRef.current
-            if (hi_ != null && p.series[hi_]) {
-                const pt = p.series[hi_]
-                const hx = X(pt.t)
-                const hy = Y(pt.v)
+            // hover crosshair
+            const hv = hoverRef.current
+            if (hv != null && S[hv]) {
+                const hx = X(S[hv].t)
+                const hy = Y(S[hv].v)
                 ctx.save()
                 ctx.setLineDash([2, 3])
                 ctx.strokeStyle = hairlineColor
                 ctx.lineWidth = 1
                 ctx.beginPath()
-                ctx.moveTo(hx, padTop - 10)
-                ctx.lineTo(hx, h - padBottom + 10)
+                ctx.moveTo(hx, Math.max(0, padTop - 12))
+                ctx.lineTo(hx, Math.min(h, h - padBottom + 12))
                 ctx.stroke()
                 ctx.restore()
-
                 ctx.beginPath()
                 ctx.arc(hx, hy, 4, 0, Math.PI * 2)
                 ctx.fillStyle = surface
@@ -409,20 +553,13 @@ export default function GarminPulse(props: any) {
         drawRef.current = draw
 
         if (reduce) {
-            draw(1)
+            draw(0)
             return () => {
                 drawRef.current = null
             }
         }
-
         const frame = (now: number) => {
-            const beatMs = 60000 / Math.max(30, pulseRef.current.bpm || 60)
-            const phase = (((now / beatMs) % 1) + 1) % 1
-            draw(phase)
-            if (numeralRef.current) {
-                const s = phase < 0.14 ? 1 + (1 - phase / 0.14) * 0.022 : 1
-                numeralRef.current.style.transform = `scale(${s.toFixed(4)})`
-            }
+            draw(now)
             raf = requestAnimationFrame(frame)
         }
         raf = requestAnimationFrame(frame)
@@ -430,48 +567,54 @@ export default function GarminPulse(props: any) {
             cancelAnimationFrame(raf)
             drawRef.current = null
         }
-    }, [accent, surface, hairlineColor, mutedColor, showResting, windowHours, width, height])
+    }, [
+        accent, surface, hairlineColor, showResting, showEnvelope, showScrim, scrimWidth,
+        bucketMinutes, lineWeight, restingOpacity, traceTopPct, traceBottomPct, fillFadeTo,
+        beatIntensity, beatDecay, beatSurge, beatFlex, beatBloom, lubDub,
+        width, height,
+    ])
 
-    // ---- hover hit-testing ----
+    // ---- hover ----
     function handleMove(e: { clientX: number }) {
         if (!showTooltip) return
         const cv = canvasRef.current
         const m = mapRef.current
-        const p = pulseRef.current
-        if (!cv || !m || !p.series.length) return
+        const S = seriesRef.current
+        if (!cv || !m || !S.length) return
 
         const rect = cv.getBoundingClientRect()
-        const mx = e.clientX - rect.left
+        const mx = (e.clientX - rect.left) * (cv.clientWidth / Math.max(1, rect.width))
+        const target =
+            m.t0 + ((mx - m.left) / Math.max(1, m.right - m.left)) * m.span
 
-        // Invert the x mapping to a timestamp, then take the nearest real sample.
-        const target = m.t0 + (mx / Math.max(1, m.w - 10)) * m.span
-        let best = -1
+        let best = 0
         let bestD = Infinity
-        for (let i = 0; i < p.series.length; i++) {
-            if (p.series[i].t < m.t0) continue // scrolled out of the window
-            const d = Math.abs(p.series[i].t - target)
+        for (let i = 0; i < S.length; i++) {
+            const d = Math.abs(S[i].t - target)
             if (d < bestD) {
                 bestD = d
                 best = i
             }
         }
-        if (best === -1) return
+        if (hoverRef.current !== best) hoverRef.current = best
 
-        if (hoverRef.current !== best) {
-            hoverRef.current = best
-            if (drawRef.current) drawRef.current(1)
-        }
-
-        const pt = p.series[best]
-        const px = ((pt.t - m.t0) / m.span) * (m.w - 10)
+        const q = S[best]
+        const px = m.left + ((q.t - m.t0) / m.span) * (m.right - m.left)
         const py =
-            m.padTop + (1 - (pt.v - m.lo) / (m.hi - m.lo)) * (m.h - m.padTop - m.padBottom)
-
+            m.padTop + (1 - (q.v - m.lo) / (m.hi - m.lo)) * (m.h - m.padTop - m.padBottom)
+        const scale = rect.width / Math.max(1, m.w)
         const wRect = widgetRef.current?.getBoundingClientRect()
-        setTip({ title: `${pt.v} bpm`, sub: clockTime(pt.t) })
+
+        setTip({
+            title: bucketMinutes ? `${Math.round(q.v)} bpm avg` : `${q.v} bpm`,
+            sub:
+                bucketMinutes && q.t0 != null && q.t1 != null
+                    ? `${clockTime(q.t0)}–${clockTime(q.t1)} · ${q.lo}–${q.hi}`
+                    : clockTime(q.t),
+        })
         setAnchor({
-            centerX: rect.left + px,
-            top: rect.top + py - TIP_GAP,
+            centerX: rect.left + px * scale,
+            top: rect.top + py * scale - TIP_GAP,
             wLeft: wRect ? wRect.left : 0,
             wRight: wRect ? wRect.right : window.innerWidth,
         })
@@ -480,128 +623,117 @@ export default function GarminPulse(props: any) {
 
     function handleLeave() {
         hoverRef.current = null
-        if (drawRef.current) drawRef.current(1)
         setTipVisible(false)
+    }
+
+    const labelStyle = {
+        fontFamily: '"Geist", sans-serif',
+        fontWeight: 500,
+        fontSize: 11,
+        lineHeight: "11px",
+        letterSpacing: "0.036em",
+        textTransform: "uppercase" as const,
+        color: titleColor,
     }
 
     return (
         <div
             ref={widgetRef}
             style={{
+                position: "relative",
                 width,
                 height,
                 borderRadius: 16,
-                padding: 20,
+                padding: 0,
                 backgroundColor: surface,
                 boxShadow: WIDGET_SHADOW,
                 overflow: "hidden",
                 fontFamily: '"Geist", sans-serif',
                 color: inkColor,
                 boxSizing: "border-box",
-                display: "flex",
-                gap: 28,
             }}
         >
+            <canvas
+                ref={canvasRef}
+                onMouseMove={handleMove}
+                onMouseLeave={handleLeave}
+                style={{
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    display: "block",
+                    cursor: showTooltip ? "crosshair" : "default",
+                }}
+            />
+
             <div
                 style={{
-                    width: 272,
-                    flex: "none",
+                    position: "absolute",
+                    inset: 0,
+                    padding: 20,
                     display: "flex",
                     flexDirection: "column",
                     justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    pointerEvents: "none",
+                    boxSizing: "border-box",
                 }}
             >
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <img
+                            src={heartIcon(heartColor)}
+                            width={12}
+                            height={12}
+                            alt=""
+                            style={{ display: "block", flexShrink: 0 }}
+                        />
+                        <div style={labelStyle}>{title}</div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                        <div
+                            style={{
+                                fontFamily: '"Geist", sans-serif',
+                                fontWeight: 500,
+                                fontSize: numeralSize,
+                                lineHeight: `${numeralSize}px`,
+                                letterSpacing: "-0.036em",
+                                color: inkColor,
+                                fontVariantNumeric: "tabular-nums",
+                            }}
+                        >
+                            {pulse.bpm}
+                        </div>
+                        <div
+                            style={{
+                                fontFamily: '"Geist", sans-serif',
+                                fontWeight: 500,
+                                fontSize: unitSize,
+                                lineHeight: "12px",
+                                letterSpacing: "0.033em",
+                                textTransform: "uppercase",
+                                color: unitColor,
+                            }}
+                        >
+                            bpm
+                        </div>
+                    </div>
+                </div>
+
                 <div
                     style={{
-                        fontWeight: 500,
-                        fontSize: 11,
-                        lineHeight: "1em",
-                        letterSpacing: "0.4px",
-                        textTransform: "uppercase",
-                        color: mutedColor,
+                        fontFamily: '"Geist", sans-serif',
+                        fontWeight: 400,
+                        fontSize: 12,
+                        lineHeight: "16px",
+                        color: metaColor,
+                        fontVariantNumeric: "tabular-nums",
                     }}
                 >
-                    Pulse
+                    {relTime(pulse.lastSyncedAt)}
                 </div>
-
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                    <div
-                        ref={numeralRef}
-                        style={{
-                            fontSize: numeralSize,
-                            fontWeight: 500,
-                            lineHeight: "0.86em",
-                            letterSpacing: -3,
-                            color: inkColor,
-                            fontVariantNumeric: "tabular-nums",
-                            transformOrigin: "left center",
-                            willChange: "transform",
-                        }}
-                    >
-                        {pulse.bpm}
-                    </div>
-                    <div
-                        style={{
-                            fontSize: 13,
-                            fontWeight: 500,
-                            letterSpacing: "0.4px",
-                            textTransform: "uppercase",
-                            color: mutedColor,
-                        }}
-                    >
-                        bpm
-                    </div>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    <div
-                        style={{
-                            fontSize: 12,
-                            lineHeight: 1.35,
-                            color: mutedColor,
-                            fontVariantNumeric: "tabular-nums",
-                        }}
-                    >
-                        {pulse.restingHeartRate ? (
-                            <>
-                                Resting{" "}
-                                <strong style={{ fontWeight: 500 }}>
-                                    {pulse.restingHeartRate}
-                                </strong>
-                                {" · today "}
-                            </>
-                        ) : (
-                            "Today "
-                        )}
-                        <strong style={{ fontWeight: 500 }}>
-                            {pulse.min24h}&#8211;{pulse.max24h}
-                        </strong>
-                    </div>
-                    <div
-                        style={{
-                            fontSize: 12,
-                            lineHeight: 1.35,
-                            color: mutedColor,
-                            fontVariantNumeric: "tabular-nums",
-                        }}
-                    >
-                        {relTime(pulse.lastSyncedAt)}
-                    </div>
-                </div>
-            </div>
-
-            <div style={{ flex: 1, minWidth: 0 }}>
-                <canvas
-                    ref={canvasRef}
-                    onMouseMove={handleMove}
-                    onMouseLeave={handleLeave}
-                    style={{
-                        display: "block",
-                        width: "100%",
-                        height: "100%",
-                        cursor: showTooltip ? "crosshair" : "default",
-                    }}
-                />
             </div>
 
             {tip &&
@@ -635,9 +767,7 @@ export default function GarminPulse(props: any) {
                             lineHeight: 1.35,
                         }}
                     >
-                        <div style={{ color: tooltipTextColor, fontWeight: 500 }}>
-                            {tip.title}
-                        </div>
+                        <div style={{ color: tooltipTextColor, fontWeight: 500 }}>{tip.title}</div>
                         <div style={{ color: tooltipSubColor }}>{tip.sub}</div>
                     </div>,
                     document.body
@@ -655,103 +785,110 @@ addPropertyControls(GarminPulse, {
         defaultValue: "https://garmin-pulse-api-seven.vercel.app/pulse.json",
         description: "Canvas blocks fetch — real data shows on the published site only.",
     },
+    title: { type: ControlType.String, title: "Title", defaultValue: "My heart rate" },
+
+    heartColor: { type: ControlType.Color, title: "Heart", defaultValue: "#BC0025" },
     accent: { type: ControlType.Color, title: "Accent", defaultValue: "#2784FC" },
     surface: { type: ControlType.Color, title: "Surface", defaultValue: "#FFFFFF" },
-    inkColor: { type: ControlType.Color, title: "Text", defaultValue: "#2B2B2B" },
-    mutedColor: { type: ControlType.Color, title: "Muted", defaultValue: "#7A7A7A" },
-    hairlineColor: {
-        type: ControlType.Color,
-        title: "Hairline",
-        defaultValue: "#EBEBEB",
-    },
-    showResting: {
-        type: ControlType.Boolean,
-        title: "Resting line",
-        defaultValue: true,
-    },
-    windowHours: {
-        type: ControlType.Number,
-        title: "Window",
-        defaultValue: 12,
-        min: 1,
-        max: 24,
-        step: 1,
-        description: "Hours of history shown. Shorter = faster visible drift.",
-    },
+    inkColor: { type: ControlType.Color, title: "Numeral", defaultValue: "#2B2B2B" },
+    titleColor: { type: ControlType.Color, title: "Title col", defaultValue: "#7A7A7A" },
+    unitColor: { type: ControlType.Color, title: "Unit col", defaultValue: "#B8B8B8" },
+    metaColor: { type: ControlType.Color, title: "Sync col", defaultValue: "#B8B8B8" },
+    hairlineColor: { type: ControlType.Color, title: "Hairline", defaultValue: "#EBEBEB" },
+
     numeralSize: {
-        type: ControlType.Number,
-        title: "Numeral",
-        defaultValue: 84,
-        min: 40,
-        max: 140,
-        step: 1,
+        type: ControlType.Number, title: "Numeral size",
+        defaultValue: 32, min: 16, max: 120, step: 1,
     },
+    unitSize: {
+        type: ControlType.Number, title: "Unit size",
+        defaultValue: 10, min: 8, max: 20, step: 1,
+    },
+
+    traceTopPct: {
+        type: ControlType.Number, title: "Trace top",
+        defaultValue: 26, min: 0, max: 80, step: 1,
+        description: "% of height above the trace. Scales with the widget.",
+    },
+    traceBottomPct: {
+        type: ControlType.Number, title: "Trace bottom",
+        defaultValue: 12, min: 0, max: 60, step: 1,
+    },
+    bucketMinutes: {
+        type: ControlType.Number, title: "Smoothing",
+        defaultValue: 6, min: 0, max: 30, step: 1,
+        description: "Minutes averaged per point. 0 = every raw reading.",
+    },
+    lineWeight: {
+        type: ControlType.Number, title: "Line weight",
+        defaultValue: 2, min: 1, max: 4, step: 0.25,
+    },
+    restingOpacity: {
+        type: ControlType.Number, title: "Resting opacity",
+        defaultValue: 35, min: 10, max: 100, step: 5,
+        description: "Line alpha between beats, when Surge is on.",
+    },
+    showResting: { type: ControlType.Boolean, title: "Resting line", defaultValue: true },
+    showEnvelope: { type: ControlType.Boolean, title: "Spread band", defaultValue: true },
+    fillFadeTo: {
+        type: ControlType.Number, title: "Fill at base",
+        defaultValue: 25, min: 0, max: 100, step: 5,
+        description: "% of the fill's top opacity kept at the widget's bottom edge. 0 fades out early.",
+    },
+    showScrim: { type: ControlType.Boolean, title: "Text scrim", defaultValue: true },
+    scrimWidth: {
+        type: ControlType.Number, title: "Scrim width",
+        defaultValue: 420, min: 0, max: 800, step: 10,
+        hidden: (p: any) => !p.showScrim,
+    },
+
+    beatSurge: { type: ControlType.Boolean, title: "Beat: surge", defaultValue: true },
+    beatFlex: {
+        type: ControlType.Boolean, title: "Beat: flex", defaultValue: false,
+        description: "Expands the trace — the only style that distorts values.",
+    },
+    beatBloom: { type: ControlType.Boolean, title: "Beat: bloom", defaultValue: false },
+    lubDub: { type: ControlType.Boolean, title: "Lub-dub", defaultValue: true },
+    beatIntensity: {
+        type: ControlType.Number, title: "Beat power",
+        defaultValue: 100, min: 0, max: 200, step: 10,
+    },
+    beatDecay: {
+        type: ControlType.Number, title: "Beat decay",
+        defaultValue: 9, min: 2, max: 30, step: 1,
+    },
+
     refreshSeconds: {
-        type: ControlType.Number,
-        title: "Refresh",
-        defaultValue: 300,
-        min: 30,
-        max: 3600,
-        step: 30,
-        description: "Seconds between refetches.",
+        type: ControlType.Number, title: "Refresh",
+        defaultValue: 300, min: 30, max: 3600, step: 30,
     },
-    showTooltip: {
-        type: ControlType.Boolean,
-        title: "Tooltip",
-        defaultValue: true,
-    },
+    showTooltip: { type: ControlType.Boolean, title: "Tooltip", defaultValue: true },
     tooltipBg: {
-        type: ControlType.Color,
-        title: "Tip bg",
-        defaultValue: "#2B2B2B",
+        type: ControlType.Color, title: "Tip bg", defaultValue: "#2B2B2B",
         hidden: (p: any) => !p.showTooltip,
     },
     tooltipTextColor: {
-        type: ControlType.Color,
-        title: "Tip text",
-        defaultValue: "#FFFFFF",
+        type: ControlType.Color, title: "Tip text", defaultValue: "#FFFFFF",
         hidden: (p: any) => !p.showTooltip,
     },
     tooltipSubColor: {
-        type: ControlType.Color,
-        title: "Tip sub",
-        defaultValue: "#E0E0E0",
+        type: ControlType.Color, title: "Tip sub", defaultValue: "#E0E0E0",
         hidden: (p: any) => !p.showTooltip,
     },
     tooltipFontSize: {
-        type: ControlType.Number,
-        title: "Tip size",
-        defaultValue: 11,
-        min: 8,
-        max: 20,
-        step: 1,
-        hidden: (p: any) => !p.showTooltip,
+        type: ControlType.Number, title: "Tip size", defaultValue: 11,
+        min: 8, max: 20, step: 1, hidden: (p: any) => !p.showTooltip,
     },
     tooltipFontWeight: {
-        type: ControlType.Number,
-        title: "Tip weight",
-        defaultValue: 400,
-        min: 100,
-        max: 900,
-        step: 100,
-        hidden: (p: any) => !p.showTooltip,
+        type: ControlType.Number, title: "Tip weight", defaultValue: 400,
+        min: 100, max: 900, step: 100, hidden: (p: any) => !p.showTooltip,
     },
     tooltipPaddingX: {
-        type: ControlType.Number,
-        title: "Tip pad X",
-        defaultValue: 9,
-        min: 0,
-        max: 32,
-        step: 1,
-        hidden: (p: any) => !p.showTooltip,
+        type: ControlType.Number, title: "Tip pad X", defaultValue: 9,
+        min: 0, max: 32, step: 1, hidden: (p: any) => !p.showTooltip,
     },
     tooltipPaddingY: {
-        type: ControlType.Number,
-        title: "Tip pad Y",
-        defaultValue: 5,
-        min: 0,
-        max: 32,
-        step: 1,
-        hidden: (p: any) => !p.showTooltip,
+        type: ControlType.Number, title: "Tip pad Y", defaultValue: 5,
+        min: 0, max: 32, step: 1, hidden: (p: any) => !p.showTooltip,
     },
 })
