@@ -64,7 +64,7 @@ function relTime(iso: string | null): string {
  * @framerIntrinsicWidth 1200
  * @framerIntrinsicHeight 288
  */
-export default function GarminPulse(props) {
+export default function GarminPulse(props: any) {
     const {
         width = 1200,
         height = 288,
@@ -100,7 +100,7 @@ export default function GarminPulse(props) {
                     restingHeartRate: d.restingHeartRate,
                     min24h: d.min24h,
                     max24h: d.max24h,
-                    series: d.series24h.map((p) => ({ t: p[0], v: p[1] })),
+                    series: d.series24h.map((p: [number, number]) => ({ t: p[0], v: p[1] })),
                     lastSyncedAt: d.lastSyncedAt,
                     isSample: false,
                 })
@@ -126,25 +126,25 @@ export default function GarminPulse(props) {
 
     // ---- drawing ----
     useEffect(() => {
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const reduce =
-            typeof window !== "undefined" &&
-            window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        const cv = canvasRef.current
+        if (!cv) return
+        if (typeof window === "undefined") return
+
+        const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches
 
         let raf = 0
 
         function draw(phase: number) {
             const p = pulseRef.current
             const dpr = window.devicePixelRatio || 1
-            const w = canvas.clientWidth
-            const h = canvas.clientHeight
+            const w = cv.clientWidth
+            const h = cv.clientHeight
             if (!w || !h) return
-            if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-                canvas.width = Math.round(w * dpr)
-                canvas.height = Math.round(h * dpr)
+            if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+                cv.width = Math.round(w * dpr)
+                cv.height = Math.round(h * dpr)
             }
-            const ctx = canvas.getContext("2d")
+            const ctx = cv.getContext("2d")
             if (!ctx) return
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
             ctx.clearRect(0, 0, w, h)
