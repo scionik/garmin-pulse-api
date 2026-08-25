@@ -39,12 +39,12 @@ Here's what you need to do:
 
 2. **Install dependencies** (one time):
    ```bash
-   python3 -m pip install -r requirements.txt
+   python3 -m pip install -r scripts/requirements.txt
    ```
 
 3. **Run the login script:**
    ```bash
-   python3 setup_garmin_auth.py
+   python3 scripts/setup_garmin_auth.py
    ```
    If your Garmin account has two-factor authentication (2FA) turned on,
    Garmin will text or email you a code, and this script will pause and ask
@@ -56,7 +56,7 @@ Here's what you need to do:
 4. **Store the session as a GitHub secret.** This pipes it straight into
    GitHub without ever displaying it:
    ```bash
-   python3 print_tokens_for_github.py --raw | gh secret set GARMIN_TOKENS
+   python3 scripts/print_tokens_for_github.py --raw | gh secret set GARMIN_TOKENS
    ```
    The `--raw` flag matters: without it the script also prints explanatory
    text, which would end up inside the secret and break the login.
@@ -75,7 +75,7 @@ the session): just repeat steps 3–5 to re-authenticate and update the secret.
 
 After step 3 above, you can run the fetch manually to see real data:
 ```bash
-python3 fetch_garmin.py
+python3 scripts/fetch_garmin.py
 cat public/pulse.json
 ```
 
@@ -105,3 +105,17 @@ npx vercel
 Follow the prompts, accept the defaults (it's a static site, no build step).
 Once deployed, `https://<your-project>.vercel.app/pulse.json` is the URL the
 Framer widget fetches.
+
+## Layout
+
+```
+public/pulse.json   <- the only file Vercel serves
+vercel.json         <- static config + CORS headers
+scripts/            <- fetcher + auth helpers; run by GitHub Actions, never by Vercel
+.github/workflows/  <- the 15-minute cron
+```
+
+The Python lives in `scripts/` rather than the repo root on purpose: with
+`requirements.txt` at the root, Vercel auto-detects the project as a Python
+app and fails the build looking for a web server entrypoint. This is a static
+site, so the root is kept free of Python markers.

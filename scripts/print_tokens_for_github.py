@@ -21,7 +21,8 @@ import sys
 import tarfile
 from pathlib import Path
 
-TOKENS_DIR = Path(__file__).parent / ".garmin_tokens"
+ROOT = Path(__file__).resolve().parent.parent
+TOKENS_DIR = ROOT / ".garmin_tokens"
 
 
 def main():

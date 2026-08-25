@@ -28,11 +28,14 @@ from garminconnect import (
     GarminConnectConnectionError,
 )
 
-load_dotenv(".env.local")
+# Scripts live in scripts/, but the session, .env.local and the served JSON all
+# live at the repo root -- so resolve everything from ROOT, never from the CWD.
+ROOT = Path(__file__).resolve().parent.parent
 
-HERE = Path(__file__).parent
-TOKENS_DIR = HERE / ".garmin_tokens"
-OUTPUT_PATH = HERE / "public" / "pulse.json"
+load_dotenv(ROOT / ".env.local")
+
+TOKENS_DIR = ROOT / ".garmin_tokens"
+OUTPUT_PATH = ROOT / "public" / "pulse.json"
 
 
 def restore_tokens_from_env():
@@ -43,9 +46,9 @@ def restore_tokens_from_env():
     raw = base64.b64decode(blob)
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
         # Members are already prefixed with ".garmin_tokens/", so extract into the
-        # project root. Extracting into TOKENS_DIR would nest it one level deeper
+        # repo root. Extracting into TOKENS_DIR would nest it one level deeper
         # (.garmin_tokens/.garmin_tokens/) and the login would find no session.
-        tar.extractall(HERE, filter="data")
+        tar.extractall(ROOT, filter="data")
 
 
 def get_client() -> Garmin:

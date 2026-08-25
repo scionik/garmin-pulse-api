@@ -27,9 +27,11 @@ from getpass import getpass
 from dotenv import load_dotenv
 from garminconnect import Garmin
 
-load_dotenv(".env.local")
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-TOKENS_DIR = os.path.join(os.path.dirname(__file__), ".garmin_tokens")
+load_dotenv(os.path.join(ROOT, ".env.local"))
+
+TOKENS_DIR = os.path.join(ROOT, ".garmin_tokens")
 
 
 def main():

@@ -1,0 +1,5 @@
+scripts/
+.github/
+.venv/
+__pycache__/
+*.py
