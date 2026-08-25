@@ -119,6 +119,7 @@ export default function GarminPulse(props: any) {
         mutedColor = "#7A7A7A",
         hairlineColor = "#EBEBEB",
         showResting = true,
+        windowHours = 12,
         numeralSize = 84,
         refreshSeconds = 300,
         showTooltip = true,
@@ -238,15 +239,27 @@ export default function GarminPulse(props: any) {
             const padBottom = 26
             const lo = p.min24h - 3
             const hi = p.max24h + 3
-            const t0 = p.series[0].t
-            const t1 = p.series[p.series.length - 1].t
-            const span = Math.max(1, t1 - t0)
+
+            // The x-axis is a window ending at *now*, not at the last reading. That
+            // makes the whole trace drift left as real time passes -- genuinely live
+            // motion, with every point still at its own true timestamp. Nothing here
+            // is interpolated or predicted.
+            const span = Math.max(1, windowHours) * 3600000
+            const tEnd = Date.now()
+            const t0 = tEnd - span
 
             mapRef.current = { t0, span, lo, hi, w, h, padTop, padBottom }
 
             const X = (t: number) => ((t - t0) / span) * (w - 10)
             const Y = (v: number) =>
                 padTop + (1 - (v - lo) / (hi - lo)) * (h - padTop - padBottom)
+
+            // Include one sample before the window so the line enters from off-canvas
+            // instead of popping in at the left edge.
+            let firstIdx = p.series.findIndex((pt) => pt.t >= t0)
+            if (firstIdx === -1) firstIdx = p.series.length - 1
+            const visible = p.series.slice(Math.max(0, firstIdx - 1))
+            if (!visible.length) return
 
             // resting reference
             if (showResting && p.restingHeartRate) {
@@ -267,9 +280,9 @@ export default function GarminPulse(props: any) {
 
             // area under the line
             ctx.beginPath()
-            ctx.moveTo(X(t0), h)
-            p.series.forEach((pt) => ctx.lineTo(X(pt.t), Y(pt.v)))
-            ctx.lineTo(X(t1), h)
+            ctx.moveTo(X(visible[0].t), h)
+            visible.forEach((pt) => ctx.lineTo(X(pt.t), Y(pt.v)))
+            ctx.lineTo(X(visible[visible.length - 1].t), h)
             ctx.closePath()
             const grad = ctx.createLinearGradient(0, padTop, 0, h)
             grad.addColorStop(0, hexToRgba(accent, 0.14))
@@ -279,7 +292,7 @@ export default function GarminPulse(props: any) {
 
             // the line
             ctx.beginPath()
-            p.series.forEach((pt, i) => {
+            visible.forEach((pt, i) => {
                 const x = X(pt.t)
                 const y = Y(pt.v)
                 if (i === 0) ctx.moveTo(x, y)
@@ -291,10 +304,35 @@ export default function GarminPulse(props: any) {
             ctx.lineCap = "round"
             ctx.stroke()
 
-            // live endpoint
-            const last = p.series[p.series.length - 1]
+            // Everything from the last real reading to now is unmeasured, so it is
+            // drawn as a faint dotted carry-forward rather than as solid line. The
+            // gap grows visibly while the watch hasn't synced.
+            const last = visible[visible.length - 1]
             const ex = X(last.t)
             const ey = Y(last.v)
+            const nowX = X(tEnd)
+
+            if (nowX - ex > 2) {
+                ctx.save()
+                ctx.setLineDash([2, 4])
+                ctx.strokeStyle = hexToRgba(accent, 0.3)
+                ctx.lineWidth = 1.4
+                ctx.beginPath()
+                ctx.moveTo(ex, ey)
+                ctx.lineTo(nowX, ey)
+                ctx.stroke()
+                ctx.restore()
+            }
+
+            // the live edge itself
+            ctx.save()
+            ctx.strokeStyle = hairlineColor
+            ctx.lineWidth = 1
+            ctx.beginPath()
+            ctx.moveTo(nowX, padTop - 10)
+            ctx.lineTo(nowX, h - padBottom + 10)
+            ctx.stroke()
+            ctx.restore()
             if (phase < 0.55) {
                 const ring = phase / 0.55
                 ctx.beginPath()
@@ -359,7 +397,7 @@ export default function GarminPulse(props: any) {
             cancelAnimationFrame(raf)
             drawRef.current = null
         }
-    }, [accent, surface, hairlineColor, mutedColor, showResting, width, height])
+    }, [accent, surface, hairlineColor, mutedColor, showResting, windowHours, width, height])
 
     // ---- hover hit-testing ----
     function handleMove(e: { clientX: number }) {
@@ -374,15 +412,17 @@ export default function GarminPulse(props: any) {
 
         // Invert the x mapping to a timestamp, then take the nearest real sample.
         const target = m.t0 + (mx / Math.max(1, m.w - 10)) * m.span
-        let best = 0
+        let best = -1
         let bestD = Infinity
         for (let i = 0; i < p.series.length; i++) {
+            if (p.series[i].t < m.t0) continue // scrolled out of the window
             const d = Math.abs(p.series[i].t - target)
             if (d < bestD) {
                 bestD = d
                 best = i
             }
         }
+        if (best === -1) return
 
         if (hoverRef.current !== best) {
             hoverRef.current = best
@@ -595,6 +635,15 @@ addPropertyControls(GarminPulse, {
         type: ControlType.Boolean,
         title: "Resting line",
         defaultValue: true,
+    },
+    windowHours: {
+        type: ControlType.Number,
+        title: "Window",
+        defaultValue: 12,
+        min: 1,
+        max: 24,
+        step: 1,
+        description: "Hours of history shown. Shorter = faster visible drift.",
     },
     numeralSize: {
         type: ControlType.Number,
