@@ -40,10 +40,12 @@ def restore_tokens_from_env():
     blob = os.environ.get("GARMIN_TOKENS", "").strip()
     if not blob:
         return
-    TOKENS_DIR.mkdir(exist_ok=True)
     raw = base64.b64decode(blob)
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        tar.extractall(TOKENS_DIR)
+        # Members are already prefixed with ".garmin_tokens/", so extract into the
+        # project root. Extracting into TOKENS_DIR would nest it one level deeper
+        # (.garmin_tokens/.garmin_tokens/) and the login would find no session.
+        tar.extractall(HERE, filter="data")
 
 
 def get_client() -> Garmin:
