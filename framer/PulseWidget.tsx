@@ -62,7 +62,7 @@ export default function PulseWidget(props) {
     const {
         width = 1200,
         height = 288,
-        endpoint = "https://garmin-pulse-api.vercel.app/pulse.json",
+        endpoint = "https://garmin-pulse-api-seven.vercel.app/pulse.json",
         accent = "#2784FC",
         surface = "#FFFFFF",
         inkColor = "#2B2B2B",
@@ -359,7 +359,7 @@ addPropertyControls(PulseWidget, {
     endpoint: {
         type: ControlType.String,
         title: "Endpoint",
-        defaultValue: "https://garmin-pulse-api.vercel.app/pulse.json",
+        defaultValue: "https://garmin-pulse-api-seven.vercel.app/pulse.json",
         description: "Canvas blocks fetch — real data shows on the published site only.",
     },
     accent: { type: ControlType.Color, title: "Accent", defaultValue: "#2784FC" },
