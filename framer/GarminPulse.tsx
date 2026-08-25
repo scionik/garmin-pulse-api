@@ -268,6 +268,13 @@ export default function GarminPulse(props: any) {
         numeralSize = 32,
         unitSize = 10,
 
+        titleSize = 11,
+        titleWeight = 500,
+        titleSpacing = 0.4,
+        syncSize = 11,
+        syncWeight = 500,
+        syncSpacing = 0.4,
+
         traceTopPct = 25,
         traceBottomPct = 15,
         bucketMinutes = 5,
@@ -628,12 +635,27 @@ export default function GarminPulse(props: any) {
 
     const labelStyle = {
         fontFamily: '"Geist", sans-serif',
-        fontWeight: 500,
-        fontSize: 11,
-        lineHeight: "11px",
-        letterSpacing: "0.036em",
+        fontWeight: titleWeight,
+        fontSize: titleSize,
+        lineHeight: `${titleSize}px`,
+        letterSpacing: `${titleSpacing}px`,
         textTransform: "uppercase" as const,
         color: titleColor,
+        whiteSpace: "nowrap" as const,
+    }
+
+    // Same treatment as the title, just a lighter colour — so the two read as a
+    // matched pair across the top of the widget.
+    const syncStyle = {
+        fontFamily: '"Geist", sans-serif',
+        fontWeight: syncWeight,
+        fontSize: syncSize,
+        lineHeight: `${syncSize}px`,
+        letterSpacing: `${syncSpacing}px`,
+        textTransform: "uppercase" as const,
+        color: metaColor,
+        fontVariantNumeric: "tabular-nums" as const,
+        whiteSpace: "nowrap" as const,
     }
 
     return (
@@ -674,24 +696,36 @@ export default function GarminPulse(props: any) {
                     padding: 20,
                     display: "flex",
                     flexDirection: "column",
-                    justifyContent: "space-between",
+                    justifyContent: "flex-start",
                     alignItems: "flex-start",
+                    gap: 12,
                     pointerEvents: "none",
                     boxSizing: "border-box",
                 }}
             >
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
+                <div
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        width: "100%",
+                    }}
+                >
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <img
                             src={heartIcon(heartColor)}
-                            width={12}
-                            height={12}
+                            width={titleSize + 1}
+                            height={titleSize + 1}
                             alt=""
                             style={{ display: "block", flexShrink: 0 }}
                         />
                         <div style={labelStyle}>{title}</div>
                     </div>
+                    <div style={syncStyle}>{relTime(pulse.lastSyncedAt)}</div>
+                </div>
 
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12 }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
                         <div
                             style={{
@@ -720,19 +754,6 @@ export default function GarminPulse(props: any) {
                             bpm
                         </div>
                     </div>
-                </div>
-
-                <div
-                    style={{
-                        fontFamily: '"Geist", sans-serif',
-                        fontWeight: 400,
-                        fontSize: 12,
-                        lineHeight: "16px",
-                        color: metaColor,
-                        fontVariantNumeric: "tabular-nums",
-                    }}
-                >
-                    {relTime(pulse.lastSyncedAt)}
                 </div>
             </div>
 
@@ -800,9 +821,44 @@ addPropertyControls(GarminPulse, {
     },
     surface: { type: ControlType.Color, title: "Surface", defaultValue: "#FFFFFF" },
     inkColor: { type: ControlType.Color, title: "Numeral", defaultValue: "#2B2B2B" },
-    titleColor: { type: ControlType.Color, title: "Title col", defaultValue: "#7A7A7A" },
-    unitColor: { type: ControlType.Color, title: "Unit col", defaultValue: "#B8B8B8" },
-    metaColor: { type: ControlType.Color, title: "Sync col", defaultValue: "#B8B8B8" },
+    titleColor: {
+        type: ControlType.Color, title: "Title colour", defaultValue: "#7A7A7A",
+        description: "The 'MY HEART RATE' label, top left.",
+    },
+    titleSize: {
+        type: ControlType.Number, title: "Title size", defaultValue: 11,
+        min: 8, max: 24, step: 1,
+        description: "Also sets the heart icon size, so the two stay in proportion.",
+    },
+    titleWeight: {
+        type: ControlType.Number, title: "Title weight", defaultValue: 500,
+        min: 100, max: 900, step: 100,
+    },
+    titleSpacing: {
+        type: ControlType.Number, title: "Title spacing", defaultValue: 0.4,
+        min: -1, max: 4, step: 0.1,
+        description: "Letter-spacing in px. Small uppercase labels want a little air.",
+    },
+    metaColor: {
+        type: ControlType.Color, title: "Sync colour", defaultValue: "#B8B8B8",
+        description: "The 'SYNCED N MIN AGO' label, top right. Lighter than the title so it reads as secondary.",
+    },
+    syncSize: {
+        type: ControlType.Number, title: "Sync size", defaultValue: 11,
+        min: 8, max: 24, step: 1,
+    },
+    syncWeight: {
+        type: ControlType.Number, title: "Sync weight", defaultValue: 500,
+        min: 100, max: 900, step: 100,
+    },
+    syncSpacing: {
+        type: ControlType.Number, title: "Sync spacing", defaultValue: 0.4,
+        min: -1, max: 4, step: 0.1,
+    },
+    unitColor: {
+        type: ControlType.Color, title: "Unit colour", defaultValue: "#B8B8B8",
+        description: "The small 'BPM' beside the big number.",
+    },
     hairlineColor: {
         type: ControlType.Color, title: "Hairline", defaultValue: "#EBEBEB",
         description: "The dashed resting-rate line and the hover crosshair.",
