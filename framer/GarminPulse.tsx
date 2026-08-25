@@ -268,18 +268,18 @@ export default function GarminPulse(props: any) {
         numeralSize = 32,
         unitSize = 10,
 
-        traceTopPct = 26,
-        traceBottomPct = 12,
-        bucketMinutes = 6,
+        traceTopPct = 25,
+        traceBottomPct = 15,
+        bucketMinutes = 5,
         lineWeight = 2,
-        restingOpacity = 35,
+        restingOpacity = 40,
         showResting = true,
-        showEnvelope = true,
+        showEnvelope = false,
         showScrim = true,
-        scrimWidth = 420,
+        scrimWidth = 0,
         fillFadeTo = 25,
 
-        beatIntensity = 100,
+        beatIntensity = 20,
         beatDecay = 9,
         beatSurge = true,
         beatFlex = false,
@@ -785,20 +785,33 @@ addPropertyControls(GarminPulse, {
         defaultValue: "https://garmin-pulse-api-seven.vercel.app/pulse.json",
         description: "Canvas blocks fetch — real data shows on the published site only.",
     },
-    title: { type: ControlType.String, title: "Title", defaultValue: "My heart rate" },
+    title: {
+        type: ControlType.String, title: "Title", defaultValue: "My heart rate",
+        description: "Small uppercase label beside the heart.",
+    },
 
-    heartColor: { type: ControlType.Color, title: "Heart", defaultValue: "#BC0025" },
-    accent: { type: ControlType.Color, title: "Accent", defaultValue: "#2784FC" },
+    heartColor: {
+        type: ControlType.Color, title: "Heart", defaultValue: "#BC0025",
+        description: "The heart icon only. Reused from the Strava widget, where it sits on a dark tooltip — hence a deeper red here.",
+    },
+    accent: {
+        type: ControlType.Color, title: "Accent", defaultValue: "#2784FC",
+        description: "Drives the line, its fill, the spread band and the end marker together.",
+    },
     surface: { type: ControlType.Color, title: "Surface", defaultValue: "#FFFFFF" },
     inkColor: { type: ControlType.Color, title: "Numeral", defaultValue: "#2B2B2B" },
     titleColor: { type: ControlType.Color, title: "Title col", defaultValue: "#7A7A7A" },
     unitColor: { type: ControlType.Color, title: "Unit col", defaultValue: "#B8B8B8" },
     metaColor: { type: ControlType.Color, title: "Sync col", defaultValue: "#B8B8B8" },
-    hairlineColor: { type: ControlType.Color, title: "Hairline", defaultValue: "#EBEBEB" },
+    hairlineColor: {
+        type: ControlType.Color, title: "Hairline", defaultValue: "#EBEBEB",
+        description: "The dashed resting-rate line and the hover crosshair.",
+    },
 
     numeralSize: {
         type: ControlType.Number, title: "Numeral size",
         defaultValue: 32, min: 16, max: 120, step: 1,
+        description: "The big BPM figure. Raising it pushes the text block down, so check it against Trace top.",
     },
     unitSize: {
         type: ControlType.Number, title: "Unit size",
@@ -807,62 +820,89 @@ addPropertyControls(GarminPulse, {
 
     traceTopPct: {
         type: ControlType.Number, title: "Trace top",
-        defaultValue: 26, min: 0, max: 80, step: 1,
-        description: "% of height above the trace. Scales with the widget.",
+        defaultValue: 25, min: 0, max: 80, step: 1,
+        description: "Empty space above the line, as a % of widget height. Raise it to push the chart down and flatten it; lower it to give the peaks more room. Scales automatically if you change the height.",
     },
     traceBottomPct: {
         type: ControlType.Number, title: "Trace bottom",
-        defaultValue: 12, min: 0, max: 60, step: 1,
+        defaultValue: 15, min: 0, max: 60, step: 1,
+        description: "Space below the line. The fill still runs past it to the bottom edge — this only sets how low the line itself can dip.",
     },
     bucketMinutes: {
         type: ControlType.Number, title: "Smoothing",
-        defaultValue: 6, min: 0, max: 30, step: 1,
-        description: "Minutes averaged per point. 0 = every raw reading.",
+        defaultValue: 5, min: 0, max: 30, step: 1,
+        description: "Minutes of readings averaged into each plotted point. 0 draws all ~440 raw readings and looks spiky. Higher is calmer but genuinely hides short spikes — turn on Spread band to keep showing them.",
     },
     lineWeight: {
         type: ControlType.Number, title: "Line weight",
         defaultValue: 2, min: 1, max: 4, step: 0.25,
+        description: "Base thickness of the trace. Surge multiplies this on each beat, so a heavier line makes the beat read stronger too.",
     },
     restingOpacity: {
         type: ControlType.Number, title: "Resting opacity",
-        defaultValue: 35, min: 10, max: 100, step: 5,
-        description: "Line alpha between beats, when Surge is on.",
+        defaultValue: 40, min: 10, max: 100, step: 5,
+        description: "How dim the line sits BETWEEN beats. The distance from here up to full is the size of the flash, so raising this is the gentlest way to calm the beat without weakening it. Only matters when Surge is on.",
     },
-    showResting: { type: ControlType.Boolean, title: "Resting line", defaultValue: true },
-    showEnvelope: { type: ControlType.Boolean, title: "Spread band", defaultValue: true },
+    showResting: {
+        type: ControlType.Boolean, title: "Resting line", defaultValue: true,
+        description: "Dashed horizontal line at your resting heart rate, so the trace has something to be read against.",
+    },
+    showEnvelope: {
+        type: ControlType.Boolean, title: "Spread band", defaultValue: false,
+        description: "Faint band behind the line showing the real lowest and highest reading inside each averaging bucket, so smoothing never hides variance. Does nothing when Smoothing is 0.",
+    },
     fillFadeTo: {
         type: ControlType.Number, title: "Fill at base",
         defaultValue: 25, min: 0, max: 100, step: 5,
         description: "% of the fill's top opacity kept at the widget's bottom edge. 0 fades out early.",
     },
-    showScrim: { type: ControlType.Boolean, title: "Text scrim", defaultValue: true },
+    showScrim: {
+        type: ControlType.Boolean, title: "Text scrim", defaultValue: true,
+        description: "White fade behind the text so the line doesn't cut through the numeral. Set Scrim width to control how far it reaches.",
+    },
     scrimWidth: {
         type: ControlType.Number, title: "Scrim width",
-        defaultValue: 420, min: 0, max: 800, step: 10,
+        defaultValue: 0, min: 0, max: 800, step: 10,
+        description: "How far the white fade reaches from the left edge. 0 turns it off and lets the line run behind the text.",
         hidden: (p: any) => !p.showScrim,
     },
 
-    beatSurge: { type: ControlType.Boolean, title: "Beat: surge", defaultValue: true },
+    beatSurge: {
+        type: ControlType.Boolean, title: "Beat: surge", defaultValue: true,
+        description: "The whole line thickens and brightens at once on each beat, then falls back to Resting opacity. Nothing moves and no reading is altered — the safest style.",
+    },
     beatFlex: {
         type: ControlType.Boolean, title: "Beat: flex", defaultValue: false,
-        description: "Expands the trace — the only style that distorts values.",
+        description: "The trace stretches vertically away from the resting line for an instant, like the chart flinching. The liveliest of the three, and the ONLY one that momentarily exaggerates your actual readings.",
     },
-    beatBloom: { type: ControlType.Boolean, title: "Beat: bloom", defaultValue: false },
-    lubDub: { type: ControlType.Boolean, title: "Lub-dub", defaultValue: true },
+    beatBloom: {
+        type: ControlType.Boolean, title: "Beat: bloom", defaultValue: false,
+        description: "The shaded area under the line swells and fades on each beat. Reads as a soft glow rather than a snap; the line itself is untouched.",
+    },
+    lubDub: {
+        type: ControlType.Boolean, title: "Lub-dub", defaultValue: true,
+        description: "Adds a smaller second beat 30% of the way to the next one — the 'dub' of a real heartbeat. It is 45% the size of the first, so it needs Beat power above roughly 50 to be noticeable at all.",
+    },
     beatIntensity: {
         type: ControlType.Number, title: "Beat power",
-        defaultValue: 100, min: 0, max: 200, step: 10,
+        defaultValue: 20, min: 0, max: 200, step: 10,
+        description: "Master size of EVERY beat effect. Below about 40 the three beat styles become hard to tell apart, because there is barely anything to see — if a style seems to do nothing, raise this first. 0 stops the beat entirely.",
     },
     beatDecay: {
         type: ControlType.Number, title: "Beat decay",
         defaultValue: 9, min: 2, max: 30, step: 1,
+        description: "How long each beat takes to fade out. Low is a sharp snap; high lingers and starts to blur into the next beat. The attack is always instant — that is what makes it read as a heartbeat rather than a pulse of light.",
     },
 
     refreshSeconds: {
         type: ControlType.Number, title: "Refresh",
         defaultValue: 300, min: 30, max: 3600, step: 30,
+        description: "How often the widget refetches the JSON. Polling faster will not make it fresher — your watch only reaches Garmin every 1-2 hours.",
     },
-    showTooltip: { type: ControlType.Boolean, title: "Tooltip", defaultValue: true },
+    showTooltip: {
+        type: ControlType.Boolean, title: "Tooltip", defaultValue: true,
+        description: "Hovering the chart snaps a crosshair to the nearest real reading and shows its time and value. Off also removes the crosshair cursor.",
+    },
     tooltipBg: {
         type: ControlType.Color, title: "Tip bg", defaultValue: "#2B2B2B",
         hidden: (p: any) => !p.showTooltip,
