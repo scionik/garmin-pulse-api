@@ -53,16 +53,17 @@ Here's what you need to do:
    On success, this saves a session file to `.garmin_tokens/` (it's
    gitignored, so it never gets committed).
 
-4. **Get the value for GitHub:**
+4. **Store the session as a GitHub secret.** This pipes it straight into
+   GitHub without ever displaying it:
    ```bash
-   python3 print_tokens_for_github.py
+   python3 print_tokens_for_github.py --raw | gh secret set GARMIN_TOKENS
    ```
-   This prints one long line of text.
+   The `--raw` flag matters: without it the script also prints explanatory
+   text, which would end up inside the secret and break the login.
 
-5. **Add it as a GitHub secret.** Once this repo is published to GitHub,
-   go to the repo's Settings → Secrets and variables → Actions → New
-   repository secret. Name it `GARMIN_TOKENS` and paste the line from
-   step 4 as the value.
+   If you'd rather do it by hand, run it without `--raw`, copy the long
+   line it prints, and paste that at the repo's Settings → Secrets and
+   variables → Actions → New repository secret, named `GARMIN_TOKENS`.
 
 That's it — after that, the GitHub Action runs on its own every 15 minutes
 and keeps `public/pulse.json` fresh, without ever needing your password again.
