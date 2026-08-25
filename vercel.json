@@ -1,4 +1,7 @@
 {
+  "framework": null,
+  "installCommand": "echo 'no dependencies to install'",
+  "buildCommand": "echo 'static site - nothing to build'",
   "outputDirectory": "public",
   "headers": [
     {
