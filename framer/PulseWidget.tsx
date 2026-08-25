@@ -58,6 +58,12 @@ function relTime(iso: string | null): string {
     return `synced ${Math.floor(hrs / 24)}d ago`
 }
 
+/**
+ * @framerSupportedLayoutWidth fixed
+ * @framerSupportedLayoutHeight fixed
+ * @framerIntrinsicWidth 1200
+ * @framerIntrinsicHeight 288
+ */
 export default function PulseWidget(props) {
     const {
         width = 1200,
@@ -352,8 +358,6 @@ function hexToRgba(hex: string, alpha: number): string {
     const b = n & 255
     return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
-
-PulseWidget.defaultProps = { width: 1200, height: 288 }
 
 addPropertyControls(PulseWidget, {
     endpoint: {
