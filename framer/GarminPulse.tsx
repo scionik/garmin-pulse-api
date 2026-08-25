@@ -287,6 +287,7 @@ export default function GarminPulse(props: any) {
         fillFadeTo = 25,
 
         revealMs = 1200,
+        revealEase = "linear",
         revealOnce = true,
 
         beatIntensity = 20,
@@ -318,7 +319,9 @@ export default function GarminPulse(props: any) {
     const mapRef = useRef<Mapping | null>(null)
     const seriesRef = useRef<Point[]>([])
     const drawRef = useRef<((now: number) => void) | null>(null)
-    // null = hasn't entered the viewport yet, so nothing is drawn.
+    // Armed when the widget enters view; the clock itself starts on the first
+    // painted frame, so mount and font-loading time isn't eaten by the animation.
+    const revealArmedRef = useRef(false)
     const revealStartRef = useRef<number | null>(null)
 
     // ---- tooltip ----
@@ -384,18 +387,17 @@ export default function GarminPulse(props: any) {
         const el = widgetRef.current
         if (!el || typeof window === "undefined") return
         if (typeof IntersectionObserver === "undefined") {
-            revealStartRef.current = 0 // no observer: just show it
+            revealArmedRef.current = true // no observer: just play it
             return
         }
         const io = new IntersectionObserver(
             (entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
-                        if (revealStartRef.current == null) {
-                            revealStartRef.current = performance.now()
-                        }
+                        revealArmedRef.current = true
                         if (revealOnce) io.disconnect()
                     } else if (!revealOnce) {
+                        revealArmedRef.current = false
                         revealStartRef.current = null // rewind so it replays
                     }
                 })
@@ -460,15 +462,22 @@ export default function GarminPulse(props: any) {
             const t1 = S[S.length - 1].t
             const span = Math.max(1, t1 - t0)
 
-            // Wipe in left to right once the widget scrolls into view. Eased out so
-            // it decelerates into place rather than stopping dead.
+            // Wipe in left to right once the widget scrolls into view.
             let reveal = 1
             if (revealMs > 0 && !reduce) {
-                const started = revealStartRef.current
-                if (started == null) reveal = 0
+                if (!revealArmedRef.current) reveal = 0
                 else {
-                    const linear = Math.min(1, Math.max(0, (now - started) / revealMs))
-                    reveal = 1 - Math.pow(1 - linear, 3)
+                    if (revealStartRef.current == null) revealStartRef.current = now
+                    const linear = Math.min(
+                        1,
+                        Math.max(0, (now - revealStartRef.current) / revealMs)
+                    )
+                    if (revealEase === "out") reveal = 1 - Math.pow(1 - linear, 3)
+                    else if (revealEase === "inout")
+                        reveal = linear < 0.5
+                            ? 4 * linear * linear * linear
+                            : 1 - Math.pow(-2 * linear + 2, 3) / 2
+                    else reveal = linear
                 }
             }
 
@@ -645,7 +654,7 @@ export default function GarminPulse(props: any) {
     }, [
         accent, surface, hairlineColor, showResting, showEnvelope, showScrim, scrimWidth,
         bucketMinutes, lineWeight, restingOpacity, traceTopPct, traceBottomPct, fillFadeTo,
-        beatIntensity, beatDecay, beatSurge, beatFlex, beatBloom, lubDub, revealMs,
+        beatIntensity, beatDecay, beatSurge, beatFlex, beatBloom, lubDub, revealMs, revealEase,
         width, height,
     ])
 
@@ -993,8 +1002,15 @@ addPropertyControls(GarminPulse, {
 
     revealMs: {
         type: ControlType.Number, title: "Reveal",
-        defaultValue: 1200, min: 0, max: 4000, step: 100,
-        description: "How long the line takes to draw itself in, left to right, once the widget scrolls into view. 0 skips the entrance and shows it immediately. Respects reduced-motion settings.",
+        defaultValue: 1200, min: 0, max: 10000, step: 100,
+        description: "How long the line takes to draw itself in, left to right, once the widget scrolls into view. 0 skips the entrance. The clock starts on the first painted frame, so none of it is lost to page load. Respects reduced-motion.",
+    },
+    revealEase: {
+        type: ControlType.Enum, title: "Reveal ease",
+        defaultValue: "linear",
+        options: ["linear", "out", "inout"],
+        optionTitles: ["Linear", "Ease out", "Ease in-out"],
+        description: "Linear draws at constant speed, like a pen — use this if you want to actually see it start at the left. Ease out is heavily front-loaded: it is already a quarter across in the first tenth of the time.",
     },
     revealOnce: {
         type: ControlType.Boolean, title: "Reveal once", defaultValue: true,
