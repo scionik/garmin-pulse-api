@@ -105,8 +105,10 @@ def main():
     all_samples = merge_heart_rate_series([yesterday_data, today_data])
 
     if not all_samples:
-        print("No heart rate samples returned for today or yesterday.")
-        sys.exit(1)
+        # Not an error -- the watch just hasn't synced to Garmin Connect yet.
+        # Exiting 0 keeps this from failing (and emailing) every run during a sync gap.
+        print("No heart rate samples returned for today or yesterday -- watch hasn't synced yet.")
+        return
 
     now_ms = datetime.now(timezone.utc).timestamp() * 1000
     cutoff_ms = now_ms - 24 * 60 * 60 * 1000
