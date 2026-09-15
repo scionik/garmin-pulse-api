@@ -62,7 +62,9 @@ jobs:
               exit 0
             fi
             echo "Push rejected (attempt $attempt) -- rebasing and retrying"
-            git pull --rebase
+            # -X theirs: on conflict, keep this run's freshly-fetched
+            # pulse.json instead of trying to line-merge two snapshots.
+            git pull --rebase -X theirs
           done
 
           echo "Could not push after 3 attempts"
